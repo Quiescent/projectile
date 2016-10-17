@@ -213,6 +213,18 @@ Otherwise consider the current directory the project root."
   :group 'projectile
   :type 'string)
 
+(defcustom projectile-project-file-cache-file
+  (expand-file-name "projectile-files.cache" user-emacs-directory)
+  "The name of Projectile's file cache file."
+  :group 'projectile
+  :type 'string)
+
+(defcustom projectile-project-folder-cache-file
+  (expand-file-name "projectile-folders.cache" user-emacs-directory)
+  "The name of Projectile's folder cache file."
+  :group 'projectile
+  :type 'string)
+
 (defcustom projectile-tags-file-name "TAGS"
   "The tags filename Projectile's going to use."
   :group 'projectile
@@ -516,6 +528,12 @@ The saved data can be restored with `projectile-unserialize'."
 
 (defvar projectile-projects-cache nil
   "A hashmap used to cache project file names to speed up related operations.")
+
+(defvar projectile-project-folders-cache nil
+  "A hashmap used to cache directories in the project to speed up two step search.")
+
+(defvar projectile-project-file-names-cache nil
+  "A hashmap used to cache base file names of to speed up two step search.")
 
 (defvar projectile-project-root-cache (make-hash-table :test 'equal)
   "Cached value of function `projectile-project-root`.")
@@ -1911,6 +1929,129 @@ With a prefix ARG invalidates the cache first."
    :action `(lambda (file)
               (find-file (expand-file-name file ,(projectile-project-root)))
               (run-hooks 'projectile-find-file-hook))))
+
+;;;###autoload
+(defun projectile-two-stage-search (&optional arg)
+  "Find files in the current project using a two stage process.
+
+If invoked without the universal argument then match first
+against file names.  If there are multiple options matching the
+name then subsequently match against the directories in which the
+file could reside.  If supplied with the universal ARG then first
+try to match against the directories and then the file names."
+  (interactive "P")
+  (if (equal arg '(4))
+      (projectile-find-project-file-by-dir nil)
+    (projectile-find-project-file-by-file nil)))
+
+(defun projectile-find-project-file-by-dir (file)
+  "Find a file in the current project against paths which contain FILE.
+
+When FILE is nil complete the action by narrowing the search by
+file, otherwise complete the command with `find-file'.  Assume:
+FILE is a file in the project.  Otherwise the search candidate
+list will be empty."
+  (let* ((root            (projectile-project-root))
+         (project-folders
+          (if file
+              (gethash file
+                       (cadr (gethash root projectile-project-file-names-cache)))
+            (car (gethash root projectile-project-folders-cache))))
+         (folder          (completing-read "Folder: "
+                                           project-folders
+                                           nil t nil nil nil nil)))
+    (if file
+        (find-file (concat root folder file))
+      (projectile-find-project-file-by-file folder))))
+
+(defun projectile-find-project-file-by-file (folder)
+  "Find a file in the current project against files in FOLDER.
+
+When DIR is nil then complete the action by narrowing the search
+by directory, otherwise find the file with `find-file'.  Assume:
+FOLDER is a file in the project.  Otherwise the search candidate
+list will be empty."
+  (let* ((root            (projectile-project-root))
+         (project-files
+          (if folder
+              (gethash folder
+                       (cadr (gethash root projectile-project-folders-cache)))
+            (car (gethash root projectile-project-file-names-cache))))
+         (file            (completing-read "File: "
+                                           project-files
+                                           nil t nil nil nil nil)))
+    (if folder
+        (find-file (concat root folder file))
+      (projectile-find-project-file-by-dir file))))
+
+(defun projectile-cache-files-and-directories (&rest args)
+  "Cache the files and directories in the current project.
+
+Caches are stored to a file on the hard disk.  This methed is
+intended to be used as advice for the ordinary cache process.
+
+Ignore ARGS, they're needed for the advice to work."
+  (ignore args)
+  (progn
+    (message "Indexing files and folders for two step search...")
+    (let ((files            '())
+          (files-per-folder (make-hash-table :test #'equal))
+          (folders          '())
+          (folders-per-file (make-hash-table :test #'equal))
+          (root             (projectile-project-root)))
+      (dolist (file-and-folder (projectile-files-and-folders))
+        (let ((file   (or (car  file-and-folder) ""))
+              (folder (or (cadr file-and-folder) "")))
+          (push file   files)
+          (push folder folders)
+          (puthash file   (protected-add-to-list
+                           (gethash file   folders-per-file) folder)
+                   folders-per-file)
+          (puthash folder (protected-add-to-list
+                           (gethash folder files-per-folder) file)
+                   files-per-folder)))
+      (puthash root `(,files   ,folders-per-file) projectile-project-file-names-cache)
+      (projectile-serialize projectile-project-file-names-cache
+                            projectile-project-file-cache-file)
+      (puthash root `(,folders ,files-per-folder) projectile-project-folders-cache)
+      (projectile-serialize projectile-project-folders-cache
+                            projectile-project-folder-cache-file))))
+
+(defun protected-add-to-list (xs x)
+  "Add to XS, and make singleton list of X if XS is nil."
+  (if xs
+      (push x xs)
+    (list x)))
+
+(advice-add #'projectile-cache-project :after
+            #'projectile-cache-files-and-directories)
+
+(defun projectile-load-file-and-folder-cache-files ()
+  "Load extra cache files for projectile two stage searching.
+
+See `projectile-two-stage-search'."
+  (progn
+    (setq projectile-project-file-names-cache
+          (or projectile-project-file-names-cache
+              (projectile-unserialize
+               projectile-project-file-cache-file)
+              (make-hash-table
+               :test #'equal)))
+    (setq projectile-project-folders-cache
+          (or projectile-project-folders-cache
+              (projectile-unserialize
+               projectile-project-folder-cache-file)
+              (make-hash-table
+               :test #'equal)))))
+
+(projectile-load-file-and-folder-cache-files)
+
+(defun projectile-files-and-folders ()
+  "Produce a list of folders cons'd with the files in them in the current project."
+  (mapcar (lambda (x)
+            (list (file-name-nondirectory x)
+                  (file-name-directory    x)))
+          (projectile-current-project-files)))
 
 ;;;###autoload
 (defun projectile-find-file-other-window (&optional arg)
@@ -3333,6 +3474,7 @@ is chosen."
     (define-key map (kbd "e") #'projectile-recentf)
     (define-key map (kbd "E") #'projectile-edit-dir-locals)
     (define-key map (kbd "f") #'projectile-find-file)
+    (define-key map (kbd " '") #'projectile-two-stage-search)
     (define-key map (kbd "g") #'projectile-find-file-dwim)
     (define-key map (kbd "F") #'projectile-find-file-in-known-projects)
     (define-key map (kbd "i") #'projectile-invalidate-cache)
