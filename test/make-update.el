@@ -1,3 +1,5 @@
+(prefer-coding-system 'utf-8)
+
 (setq package-user-dir
       (expand-file-name (format ".elpa/%s/elpa" emacs-version)))
 (message "installing in %s ...\n" package-user-dir)
@@ -13,7 +15,7 @@
 (dolist (package dev-packages)
   (unless (package-installed-p package)
     (ignore-errors
-     (package-install package))))
+      (package-install package))))
 
 (save-window-excursion
   (package-list-packages t)
@@ -23,4 +25,3 @@
         (package-menu-execute t))
     (error
      (message "All packages up to date"))))
-
